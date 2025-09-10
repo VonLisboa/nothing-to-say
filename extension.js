@@ -7,6 +7,7 @@ import Meta from "gi://Meta";
 import Shell from "gi://Shell";
 import Gvc from "gi://Gvc";
 import GObject from "gi://GObject";
+import Clutter from "gi://Clutter";
 
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
 import * as PanelMenu from "resource:///org/gnome/shell/ui/panelMenu.js";
@@ -21,7 +22,6 @@ const EXCLUDED_APPLICATION_IDS = [
 const KEYBINDING_KEY_NAME = "keybinding-toggle-mute";
 const MICROPHONE_ACTIVE_STYLE_CLASS = "screencast-indicator";
 
-let initialised = false; // flag to avoid notifications on startup
 let settings = null;
 let microphone;
 let audio_player;
@@ -45,7 +45,6 @@ class Microphone extends Signals.EventEmitter {
   }
 
   refresh() {
-    // based on gnome-shell volume control
     if (this.stream && this.muted_changed_id) {
       this.stream.disconnect(this.muted_changed_id);
     }
@@ -129,10 +128,7 @@ const MicrophonePanelButton = GObject.registerClass(
       this.add_child(this.icon);
       this.connect("button-press-event", (_, event) => {
         if (event.get_button() === 3) {
-          // Right click.
           extension.openPreferences();
-        } else {
-          on_activate({ give_feedback: false });
         }
       });
     }
@@ -140,7 +136,6 @@ const MicrophonePanelButton = GObject.registerClass(
 );
 
 function get_icon_name(muted) {
-  // TODO: use -low and -medium icons based on .level
   return muted
     ? "microphone-sensitivity-muted-symbolic"
     : "microphone-sensitivity-high-symbolic";
@@ -154,7 +149,7 @@ function icon_should_be_visible(microphone_active) {
     case "never":
       return false;
     default:
-      return microphone.active; // when-recording
+      return microphone.active;
   }
 }
 
@@ -162,37 +157,6 @@ function show_osd(text, muted, level) {
   const monitor = -1;
   const icon = Gio.Icon.new_for_string(get_icon_name(muted));
   Main.osdWindowManager.show(monitor, icon, text, level);
-}
-
-function on_activate({ give_feedback }) {
-  toggle_mute(!microphone.muted, give_feedback);
-}
-
-let toggle_mute_timeout_id = null;
-
-function toggle_mute(mute, give_feedback) {
-  // use a delay before toggling; this makes push-to-talk/mute work
-  if (toggle_mute_timeout_id) {
-    GLib.Source.remove(toggle_mute_timeout_id);
-    if (give_feedback) {
-      // keep osd visible
-      show_osd(null, !mute, mute ? microphone.level : 0);
-    }
-  }
-  toggle_mute_timeout_id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
-    toggle_mute_timeout_id = null;
-    microphone.muted = mute;
-    if (give_feedback) {
-      show_osd(null, mute, mute ? 0 : microphone.level);
-    }
-    if (settings.get_boolean("play-feedback-sounds")) {
-      if (mute) {
-        audio_player.play_off();
-      } else {
-        audio_player.play_on();
-      }
-    }
-  });
 }
 
 export default class extends Extension {
@@ -204,6 +168,10 @@ export default class extends Extension {
     panel_button.visible = icon_should_be_visible(microphone.active);
     const indicatorName = `${this.metadata.name} indicator`;
     Main.panel.addToStatusArea(indicatorName, panel_button, 0, "right");
+
+    // força iniciar mutado
+    microphone.muted = true;
+
     microphone.connect("notify::active", () => {
       if (microphone.active) {
         panel_button.icon.add_style_class_name(MICROPHONE_ACTIVE_STYLE_CLASS);
@@ -213,28 +181,45 @@ export default class extends Extension {
         );
       }
       panel_button.visible = icon_should_be_visible(microphone.active);
-      if (
-        settings.get_boolean("show-osd") &&
-        (initialised || microphone.active)
-      )
-        show_osd(
-          microphone.active ? "Microphone activated" : "Microphone deactivated",
-          microphone.muted,
-        );
-      initialised = true;
     });
     microphone.connect("notify::muted", () => {
       panel_button.icon.icon_name = get_icon_name(microphone.muted);
     });
+
+    // registra keybinding push-to-talk
     Main.wm.addKeybinding(
       KEYBINDING_KEY_NAME,
       settings,
       Meta.KeyBindingFlags.NONE,
-      Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
+      Shell.ActionMode.ALL,
       () => {
-        on_activate({ give_feedback: settings.get_boolean("show-osd") });
+        // necessário para registrar, mas não usado
       },
     );
+
+    // eventos press/release
+    this._keyPressId = global.display.connect("key-press-event", (display, event) => {
+      const keyCode = event.get_key_code();
+      const binding = Main.wm.lookupKeybinding(KEYBINDING_KEY_NAME);
+      if (binding && binding.get_key_code() === keyCode) {
+        microphone.muted = false;
+        if (settings.get_boolean("show-osd"))
+          show_osd("Microphone unmuted", false, microphone.level);
+      }
+      return Clutter.EVENT_PROPAGATE;
+    });
+
+    this._keyReleaseId = global.display.connect("key-release-event", (display, event) => {
+      const keyCode = event.get_key_code();
+      const binding = Main.wm.lookupKeybinding(KEYBINDING_KEY_NAME);
+      if (binding && binding.get_key_code() === keyCode) {
+        microphone.muted = true;
+        if (settings.get_boolean("show-osd"))
+          show_osd("Microphone muted", true, 0);
+      }
+      return Clutter.EVENT_PROPAGATE;
+    });
+
     settings.connect("changed::icon-visibility", () => {
       panel_button.visible = icon_should_be_visible(microphone.active);
     });
@@ -242,15 +227,18 @@ export default class extends Extension {
 
   disable() {
     Main.wm.removeKeybinding(KEYBINDING_KEY_NAME);
+    if (this._keyPressId) {
+      global.display.disconnect(this._keyPressId);
+      this._keyPressId = null;
+    }
+    if (this._keyReleaseId) {
+      global.display.disconnect(this._keyReleaseId);
+      this._keyReleaseId = null;
+    }
     Main.panel._rightBox.remove_child(panel_button);
-    settings = null;
     microphone.destroy();
     microphone = null;
     panel_button.destroy();
     panel_button = null;
-    if (toggle_mute_timeout_id) {
-      GLib.Source.remove(toggle_mute_timeout_id);
-      toggle_mute_timeout_id = null;
-    }
   }
 }

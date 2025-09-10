@@ -2,6 +2,21 @@
 nothing to say
 ==============
 
+
+**Observations:**
+
+This is my own version where you need to stay the key pressed to talk. 
+I use this in Ubuntu with **Input remapper** to use one extra key of my mouse pressed to talk.
+
+Why? my audio leaked pissed (***) with remote work colleagues hahuahuah, who never? 
+
+**You can install from gnome and manually edit the file extension.js located in**
+
+    ~/.local/share/gnome-shell/extensions/
+
+
+---
+
 this gnome-shell extension always keeps your microphone muted, unless
 you actually have something to say.
 

@@ -186,39 +186,63 @@ export default class extends Extension {
       panel_button.icon.icon_name = get_icon_name(microphone.muted);
     });
 
-    // registra keybinding push-to-talk
+    // Implementa push-to-talk usando uma abordagem extremamente simples
+    this._isMuted = true; // Estado do microfone
+    this._outDelay = 2000;
+    this._timerId = 0; // ID do timer para poder cancelar
+
+
+    // Registra keybinding para pressionar (PRESS)
     Main.wm.addKeybinding(
       KEYBINDING_KEY_NAME,
       settings,
       Meta.KeyBindingFlags.NONE,
       Shell.ActionMode.ALL,
       () => {
-        // necessário para registrar, mas não usado
-      },
+        // Alterna o estado do microfone
+        if (this._isMuted) {
+          // Desmuta o microfone
+          this._isMuted = false;
+          microphone.muted = false;
+          
+          if (settings.get_boolean("show-osd"))
+            show_osd("Microphone unmuted", false, microphone.level);
+          
+          // Play sound if enabled
+          if (settings.get_boolean("play-feedback-sounds"))
+            audio_player.play_on();
+        } else if (this._outDelay == 0) {
+          // Muta o microfone
+          this._isMuted = true;
+          microphone.muted = true;
+          
+          if (settings.get_boolean("show-osd"))
+            show_osd("Microphone muted", true, 0);
+          
+          // Play sound if enabled
+          if (settings.get_boolean("play-feedback-sounds"))
+            audio_player.play_off();
+        } else {
+          // Cancela o timer anterior se existir
+          if (this._timerId !== 0) {
+            GLib.source_remove(this._timerId);
+            this._timerId = 0;
+          }
+          
+          // Configura um novo timer
+          this._outDelay = 2000;
+          this._timerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, this._outDelay, () => {
+            // Muta o microfone após o delay
+            this._isMuted = true;
+            microphone.muted = true;
+            this._outDelay = 2000;
+            this._timerId = 0;
+            
+            return GLib.SOURCE_REMOVE;
+          });
+        }
+      }
     );
-
-    // eventos press/release
-    this._keyPressId = global.display.connect("key-press-event", (display, event) => {
-      const keyCode = event.get_key_code();
-      const binding = Main.wm.lookupKeybinding(KEYBINDING_KEY_NAME);
-      if (binding && binding.get_key_code() === keyCode) {
-        microphone.muted = false;
-        if (settings.get_boolean("show-osd"))
-          show_osd("Microphone unmuted", false, microphone.level);
-      }
-      return Clutter.EVENT_PROPAGATE;
-    });
-
-    this._keyReleaseId = global.display.connect("key-release-event", (display, event) => {
-      const keyCode = event.get_key_code();
-      const binding = Main.wm.lookupKeybinding(KEYBINDING_KEY_NAME);
-      if (binding && binding.get_key_code() === keyCode) {
-        microphone.muted = true;
-        if (settings.get_boolean("show-osd"))
-          show_osd("Microphone muted", true, 0);
-      }
-      return Clutter.EVENT_PROPAGATE;
-    });
 
     settings.connect("changed::icon-visibility", () => {
       panel_button.visible = icon_should_be_visible(microphone.active);
@@ -227,14 +251,13 @@ export default class extends Extension {
 
   disable() {
     Main.wm.removeKeybinding(KEYBINDING_KEY_NAME);
-    if (this._keyPressId) {
-      global.display.disconnect(this._keyPressId);
-      this._keyPressId = null;
+    
+    // Cancela o timer se estiver ativo
+    if (this._timerId !== 0) {
+      GLib.source_remove(this._timerId);
+      this._timerId = 0;
     }
-    if (this._keyReleaseId) {
-      global.display.disconnect(this._keyReleaseId);
-      this._keyReleaseId = null;
-    }
+    
     Main.panel._rightBox.remove_child(panel_button);
     microphone.destroy();
     microphone = null;

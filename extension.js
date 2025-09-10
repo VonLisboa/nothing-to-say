@@ -153,10 +153,10 @@ function icon_should_be_visible(microphone_active) {
   }
 }
 
-function show_osd(text, muted, level) {
+function show_osd(text, muted) {
   const monitor = -1;
   const icon = Gio.Icon.new_for_string(get_icon_name(muted));
-  Main.osdWindowManager.show(monitor, icon, text, level);
+  Main.osdWindowManager.show(monitor, icon, text);
 }
 
 export default class extends Extension {
@@ -206,7 +206,7 @@ export default class extends Extension {
           microphone.muted = false;
           
           if (settings.get_boolean("show-osd"))
-            show_osd("Microphone unmuted", false, microphone.level);
+            show_osd("Mic ATIVO", false);
           
           // Play sound if enabled
           if (settings.get_boolean("play-feedback-sounds"))
@@ -215,15 +215,18 @@ export default class extends Extension {
           // Muta o microfone
           this._isMuted = true;
           microphone.muted = true;
-          
+
           if (settings.get_boolean("show-osd"))
-            show_osd("Microphone muted", true, 0);
+            show_osd("Microphone muted", true);
           
           // Play sound if enabled
           if (settings.get_boolean("play-feedback-sounds"))
             audio_player.play_off();
         } else {
           // Cancela o timer anterior se existir
+          if (settings.get_boolean("show-osd"))
+            show_osd("Mic ATIVO", false);
+          
           if (this._timerId !== 0) {
             GLib.source_remove(this._timerId);
             this._timerId = 0;
@@ -235,15 +238,14 @@ export default class extends Extension {
             // Muta o microfone após o delay
             this._isMuted = true;
             microphone.muted = true;
+            
             this._outDelay = 2000;
             this._timerId = 0;
-            
             return GLib.SOURCE_REMOVE;
           });
         }
       }
     );
-
     settings.connect("changed::icon-visibility", () => {
       panel_button.visible = icon_should_be_visible(microphone.active);
     });
